@@ -1,0 +1,1881 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2021년 투자 시뮬레이터</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        #root {
+            min-height: 100vh;
+        }
+        .chart-container {
+            height: 300px;
+            position: relative;
+        }
+        @media (max-width: 768px) {
+            .chart-container { height: 250px; }
+        }
+        .game-footer {
+            padding: 1rem 1.5rem;
+            text-align: center;
+            background: rgba(255,255,255,0.9);
+            border-top: 1px solid rgba(0,0,0,0.06);
+        }
+        .game-footer img {
+            height: 36px;
+            display: inline-block;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"><p style="padding:2rem;text-align:center;">로딩 중...</p></div>
+    <footer class="game-footer" role="contentinfo">
+        <img src="assets/logo.png" alt="STOIC EDU" />
+    </footer>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+        // 투자 기간 설정
+        const INVESTMENT_START = { year: 2021, month: 4 }; // 2021년 4월
+        const REBALANCE_MONTH = 24; // 24개월 후 (2023년 4월)
+        const TOTAL_MONTHS = 57; // 2021년 4월 ~ 2025년 12월 (57개월)
+        
+        // 상태 관리
+        let state = {
+            stage: 'setup',
+            initialInvestment: 10000000,
+            portfolio: {},
+            inputValues: {},
+            rebalancePortfolio: {},
+            rebalanceInputValues: {},
+            rebalanced: false,
+            revealNames: false,
+            selectedCompany: null
+        };
+
+        // 연도별 수익률을 월별로 변환하는 함수
+        function convertYearlyToMonthly(yearlyReturns, isCash = false) {
+            const monthlyReturns = [];
+            
+            // CASH의 경우 연 2% 복리로 매월 동일하게 적용
+            if (isCash) {
+                const monthlyRate = Math.pow(1.02, 1/12); // 연 2%의 월별 복리
+                for (let i = 0; i < 57; i++) {
+                    monthlyReturns.push(monthlyRate);
+                }
+                return monthlyReturns;
+            }
+            
+            // 2021년 4월~12월 (9개월), 2022년 (12개월), 2023년 1~4월 (4개월), 2023년 4~12월 (8개월), 2024년 (12개월), 2025년 (12개월)
+            // 총 57개월
+            // yearlyReturns 배열: [0]=2021, [1]=2022, [2]=2023, [3]=2024, [4]=2025
+            
+            // 2021년 4월~12월: 첫 번째 연도 수익률의 9/12
+            const year1Return = yearlyReturns[0] || 1.0;
+            const year1Monthly = Math.pow(year1Return, 9/12);
+            for (let i = 0; i < 9; i++) {
+                monthlyReturns.push(1 + (year1Monthly - 1) / 9);
+            }
+            
+            // 2022년: 두 번째 연도 수익률을 12개월로 분산
+            const year2Return = yearlyReturns[1] || 1.0;
+            const year2Monthly = Math.pow(year2Return, 1/12);
+            for (let i = 0; i < 12; i++) {
+                monthlyReturns.push(year2Monthly);
+            }
+            
+            // 2023년 1~4월: 세 번째 연도 수익률의 4/12
+            const year3Return = yearlyReturns[2] || 1.0;
+            const year3Monthly = Math.pow(year3Return, 4/12);
+            for (let i = 0; i < 4; i++) {
+                monthlyReturns.push(1 + (year3Monthly - 1) / 4);
+            }
+            
+            // 2023년 4~12월: 세 번째 연도 수익률의 8/12 (2023년 데이터를 계속 사용)
+            const year3bReturn = yearlyReturns[2] || 1.0; // 2023년 데이터
+            const year3bMonthly = Math.pow(year3bReturn, 8/12);
+            for (let i = 0; i < 8; i++) {
+                monthlyReturns.push(1 + (year3bMonthly - 1) / 8);
+            }
+            
+            // 2024년: 네 번째 연도 수익률을 12개월로 분산
+            const year4Return = yearlyReturns[3] || 1.0; // 2024년 데이터
+            const year4Monthly = Math.pow(year4Return, 1/12);
+            for (let i = 0; i < 12; i++) {
+                monthlyReturns.push(year4Monthly);
+            }
+            
+            // 2025년: 다섯 번째 연도 수익률을 12개월로 분산
+            const year5Return = yearlyReturns[4] || 1.0; // 2025년 데이터
+            const year5Monthly = Math.pow(year5Return, 1/12);
+            for (let i = 0; i < 12; i++) {
+                monthlyReturns.push(year5Monthly);
+            }
+            
+            return monthlyReturns;
+        }
+
+        // 연도별 수익률 데이터 (2021~2025년)
+        const yearlyReturnsData = {
+            'CASH': [1.02, 1.02, 1.02, 1.02, 1.02], // 연 2% 복리
+            'A': [2.457, 0.808, 1.047, 0.991, 1.617], // SM엔터테인먼트: 2021(+145.70%), 2022(-19.21%), 2023(+4.66%), 2024(-0.92%), 2025(+61.68%)
+            'B': [1.541, 1.119, 1.397, 0.928, 0.968], // JYP: 2021(+54.10%), 2022(+11.91%), 2023(+39.72%), 2024(-7.17%), 2025(-3.20%)
+            'C': [0.775, 0.495, 0.530, 0.924, 1.177], // 엔씨소프트: 2021(-22.53%), 2022(-50.46%), 2023(-47.03%), 2024(-7.57%), 2025(+17.73%)
+            'D': [0.617, 0.684, 0.997, 0.888, 0.931], // 아모레퍼시픽: 2021(-38.26%), 2022(-31.59%), 2023(-0.34%), 2024(-11.19%), 2025(-6.88%)
+            'E': [1.023, 0.705, 1.613, 1.297, 3.302], // SK하이닉스: 2021(+2.34%), 2022(-29.51%), 2023(+61.28%), 2024(+29.69%), 2025(+230.23%)
+            'F': [0.990, 0.926, 1.215, 1.155, 1.535], // 현대자동차: 2021(-1.00%), 2022(-7.44%), 2023(+21.53%), 2024(+15.54%), 2025(+53.49%)
+            'G': [0.701, 0.444, 0.959, 1.570, 1.003], // 쿠팡: 2021(-29.88%), 2022(-55.56%), 2023(-4.14%), 2024(+57.00%), 2025(+0.34%)
+            'H': [1.035, 0.361, 2.376, 1.505, 0.960], // Meta Platforms: 2021(+3.47%), 2022(-63.89%), 2023(+137.60%), 2024(+50.53%), 2025(-4.00%)
+            'I': [1.384, 0.279, 1.229, 1.491, 1.140], // Roblox: 2021(+38.38%), 2022(-72.10%), 2023(+22.87%), 2024(+49.09%), 2025(+14.01%)
+            'J': [0.790, 0.369, 2.207, 4.700, 2.155], // Palantir: 2021(-20.96%), 2022(-63.12%), 2023(+120.69%), 2024(+370.04%), 2025(+115.48%)
+            'K': [1.000, 0.931, 1.386, 1.846, 1.184], // Constellation Energy: 2021(데이터 부족→1.0), 2022(-6.90%), 2023(+38.61%), 2024(+84.64%), 2025(+18.42%)
+            'L': [0.991, 0.538, 0.877, 0.728, 1.570], // 카카오: 2021(-0.88%), 2022(-46.23%), 2023(-12.28%), 2024(-27.16%), 2025(+56.95%)
+            'M': [0.628, 0.673, 1.253, 1.702, 1.986], // 한화오션: 2021(-37.19%), 2022(-32.69%), 2023(+25.29%), 2024(+70.16%), 2025(+98.60%)
+            'N': [1.244, 1.081, 1.549, 2.129, 2.353], // 한화에어로스페이스: 2021(+24.35%), 2022(+8.12%), 2023(+54.85%), 2024(+112.85%), 2025(+135.25%)
+            'O': [0.514, 0.757, 0.703, 1.200, 1.508], // Alibaba: 2021(-48.56%), 2022(-24.32%), 2023(-29.66%), 2024(+20.04%), 2025(+50.81%)
+            'P': [1.476, 0.920, 1.127, 1.199, 0.787], // Hermès: 2021(+47.55%), 2022(-8.05%), 2023(+12.67%), 2024(+19.94%), 2025(-21.28%)
+            'Q': [0.699, 0.308, 0.803, 5.183, 2.024], // Pop Mart: 2021(-30.08%), 2022(-69.23%), 2023(-19.68%), 2024(+418.28%), 2025(+102.43%)
+            'R': [0.761, 0.184, 1.465, 0.678, 0.715], // Snap: 2021(-23.92%), 2022(-81.59%), 2023(+46.45%), 2024(-32.22%), 2025(-28.52%)
+            'S': [0.928, 0.375, 1.667, 2.078, 1.059], // Spotify: 2021(-7.18%), 2022(-62.49%), 2023(+66.71%), 2024(+107.75%), 2025(+5.86%)
+            'T': [1.528, 1.322, 1.711, 1.204, 1.335] // Eli Lilly: 2021(+52.78%), 2022(+32.24%), 2023(+71.05%), 2024(+20.36%), 2025(+33.49%)
+        };
+
+        // 월별 수익률로 변환
+        const companies = {};
+        Object.entries(yearlyReturnsData).forEach(([ticker, yearlyReturns]) => {
+            const companyInfo = {
+                'CASH': { name: '현금 (예금)', codeName: '현금 보유', color: '#10B981' },
+                'A': { name: 'SM엔터테인먼트', codeName: '회사 A', color: '#E31F26' },
+                'B': { name: 'JYP Ent.', codeName: '회사 B', color: '#FF6B9D' },
+                'C': { name: '엔씨소프트', codeName: '회사 C', color: '#0066CC' },
+                'D': { name: '아모레퍼시픽', codeName: '회사 D', color: '#E31F26' },
+                'E': { name: 'SK하이닉스', codeName: '회사 E', color: '#E31F26' },
+                'F': { name: '현대자동차', codeName: '회사 F', color: '#002C5F' },
+                'G': { name: '쿠팡', codeName: '회사 G', color: '#FF6B00' },
+                'H': { name: 'Meta Platforms', codeName: '회사 H', color: '#0082FB' },
+                'I': { name: 'Roblox', codeName: '회사 I', color: '#00D9FF' },
+                'J': { name: 'Palantir', codeName: '회사 J', color: '#101010' },
+                'K': { name: 'Constellation Energy', codeName: '회사 K', color: '#0066CC' },
+                'L': { name: '카카오', codeName: '회사 L', color: '#FEE500' },
+                'M': { name: '한화오션', codeName: '회사 M', color: '#0066CC' },
+                'N': { name: '한화에어로스페이스', codeName: '회사 N', color: '#0066CC' },
+                'O': { name: 'Alibaba Group', codeName: '회사 O', color: '#FF6B00' },
+                'P': { name: 'Hermès', codeName: '회사 P', color: '#F37021' },
+                'Q': { name: 'Pop Mart', codeName: '회사 Q', color: '#FF6B9D' },
+                'R': { name: 'Snap Inc.', codeName: '회사 R', color: '#FFFC00' },
+                'S': { name: 'Spotify', codeName: '회사 S', color: '#1DB954' },
+                'T': { name: 'Eli Lilly', codeName: '회사 T', color: '#D52B1E' }
+            };
+            
+            companies[ticker] = {
+                ...companyInfo[ticker],
+                returns: convertYearlyToMonthly(yearlyReturns, ticker === 'CASH')
+            };
+        });
+
+        // 차트 인스턴스 저장
+        let chartInstances = {
+            rebalance: null,
+            rebalanceInput: null,
+            final: null,
+            pie: null,
+            returnChart: null,
+            companyChart: null
+        };
+
+        function destroyChart(key) {
+            if (chartInstances[key]) {
+                chartInstances[key].destroy();
+                chartInstances[key] = null;
+            }
+        }
+
+        function destroyAllCharts() {
+            Object.keys(chartInstances).forEach(key => destroyChart(key));
+        }
+
+        // 유틸리티 함수
+        function getDisplayName(ticker) {
+            return state.revealNames ? companies[ticker].name : companies[ticker].codeName;
+        }
+
+        // 월 인덱스로 포트폴리오 가치 계산 (0 = 2021년 4월, 23 = 2023년 4월, 56 = 2025년 12월)
+        function calculatePortfolioValue(investments, monthIndex) {
+            let total = 0;
+            Object.entries(investments).forEach(([ticker, amount]) => {
+                let value = amount;
+                for (let i = 0; i <= monthIndex && i < companies[ticker].returns.length; i++) {
+                    value *= companies[ticker].returns[i];
+                }
+                total += value;
+            });
+            return Math.round(total);
+        }
+
+        // 월 인덱스를 날짜 문자열로 변환
+        function getMonthLabel(monthIndex) {
+            const startYear = INVESTMENT_START.year;
+            const startMonth = INVESTMENT_START.month;
+            let year = startYear;
+            let month = startMonth + monthIndex;
+            
+            while (month > 12) {
+                month -= 12;
+                year += 1;
+            }
+            
+            return `${year}년 ${month}월`;
+        }
+
+        function calculateDiversification(investments) {
+            if (!investments || typeof investments !== 'object') return 0;
+            const total = Object.values(investments).reduce((sum, val) => sum + val, 0);
+            if (total === 0) return 0;
+            
+            const proportions = Object.values(investments).map(val => val / total);
+            const herfindahl = proportions.reduce((sum, p) => sum + p * p, 0);
+            return Math.round((1 - herfindahl) * 100);
+        }
+
+        // 투자 성향 계산 (공격형/안정형 비율)
+        function calculateInvestmentStyle(investments) {
+            const total = Object.values(investments).reduce((sum, val) => sum + val, 0);
+            if (total === 0) return { aggressive: 0, stable: 0, risky: 0, style: '미정' };
+            
+            // 자산 분류
+            const aggressiveTickers = ['A', 'B', 'C', 'G', 'H', 'I', 'J', 'K', 'L', 'N', 'O', 'Q', 'R', 'S']; // 고성장 주식
+            const stableTickers = ['CASH', 'D', 'F', 'P', 'T']; // 안정 자산
+            const riskyTickers = ['E', 'M']; // 고위험 자산
+            
+            let aggressive = 0;
+            let stable = 0;
+            let risky = 0;
+            
+            Object.entries(investments).forEach(([ticker, amount]) => {
+                if (aggressiveTickers.includes(ticker)) {
+                    aggressive += amount;
+                } else if (stableTickers.includes(ticker)) {
+                    stable += amount;
+                } else if (riskyTickers.includes(ticker)) {
+                    risky += amount;
+                }
+            });
+            
+            const aggressivePercent = Math.round((aggressive / total) * 100);
+            const stablePercent = Math.round((stable / total) * 100);
+            const riskyPercent = Math.round((risky / total) * 100);
+            
+            // 성향 판단
+            let style = '균형형';
+            if (aggressivePercent >= 60) {
+                style = '공격형';
+            } else if (stablePercent >= 60) {
+                style = '안정형';
+            } else if (riskyPercent >= 30) {
+                style = '고위험형';
+            } else if (aggressivePercent > stablePercent && aggressivePercent >= 40) {
+                style = '성장형';
+            } else if (stablePercent > aggressivePercent && stablePercent >= 40) {
+                style = '보수형';
+            }
+            
+            return {
+                aggressive: aggressivePercent,
+                stable: stablePercent,
+                risky: riskyPercent,
+                style: style
+            };
+        }
+
+        // 이벤트 핸들러
+        function handleInputChange(ticker, value) {
+            state.inputValues[ticker] = value;
+        }
+
+        function handleInputSubmit(ticker) {
+            const amount = parseInt(state.inputValues[ticker] || '0') * 10000;
+            if (amount > 0 && !isNaN(amount)) {
+                const currentTotal = Object.values(state.portfolio).reduce((sum, val) => sum + val, 0);
+                const currentInvestment = state.portfolio[ticker] || 0;
+                const newTotal = currentTotal - currentInvestment + amount;
+                
+                if (newTotal > state.initialInvestment) {
+                    alert(`❌ 투자 한도 초과!\n\n현재 투자금: ${(currentTotal / 10000).toFixed(0)}만원\n추가 가능 금액: ${((state.initialInvestment - currentTotal) / 10000).toFixed(0)}만원\n\n총 1,000만원을 초과할 수 없습니다.`);
+                    return;
+                }
+                
+                state.portfolio[ticker] = amount;
+                render();
+                
+                if (newTotal === state.initialInvestment) {
+                    alert(`✅ 투자 완료!\n\n1,000만원을 모두 투자했습니다.\n더 이상 투자할 수 없습니다.\n\n"2년 후 결과 보기"를 클릭하세요!`);
+                }
+            }
+        }
+
+        function handleRebalanceInputChange(ticker, value) {
+            state.rebalanceInputValues[ticker] = value;
+        }
+
+        function handleRebalanceInputSubmit(ticker) {
+            const amount = parseInt(state.rebalanceInputValues[ticker] || '0') * 10000;
+            if (amount > 0 && !isNaN(amount)) {
+                const rebalanceValue = calculatePortfolioValue(state.portfolio, REBALANCE_MONTH - 1);
+                const currentTotal = Object.values(state.rebalancePortfolio).reduce((sum, val) => sum + val, 0);
+                const currentInvestment = state.rebalancePortfolio[ticker] || 0;
+                const newTotal = currentTotal - currentInvestment + amount;
+                
+                if (newTotal > rebalanceValue) {
+                    alert(`❌ 투자 한도 초과!\n\n현재 투자금: ${(currentTotal / 10000).toFixed(0)}만원\n보유 자산: ${(rebalanceValue / 10000).toFixed(0)}만원\n추가 가능 금액: ${((rebalanceValue - currentTotal) / 10000).toFixed(0)}만원`);
+                    return;
+                }
+                
+                state.rebalancePortfolio[ticker] = amount;
+                render();
+                
+                if (newTotal === rebalanceValue) {
+                    alert(`✅ 재투자 완료!\n\n${(rebalanceValue / 10000).toFixed(0)}만원을 모두 재투자했습니다.\n더 이상 투자할 수 없습니다.\n\n"최종 결과 보기"를 클릭하세요!`);
+                }
+            }
+        }
+
+        // DOM 헬퍼 함수
+        function createElement(tag, className = '', attributes = {}) {
+            const el = document.createElement(tag);
+            if (className) el.className = className;
+            Object.entries(attributes).forEach(([key, value]) => {
+                if (key === 'style' && typeof value === 'object') {
+                    Object.assign(el.style, value);
+                } else if (key === 'id' || key === 'type' || key === 'step' || key === 'min' || key === 'placeholder' || key === 'disabled') {
+                    el[key] = value;
+                } else {
+                    el.setAttribute(key, value);
+                }
+            });
+            return el;
+        }
+
+        // 렌더링 함수들
+        function renderSetup() {
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-6xl mx-auto bg-gradient-to-br from-blue-50 to-purple-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const title = createElement('h1', 'text-3xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = '🎮 2021년 투자 시뮬레이터';
+            container.appendChild(title);
+            
+            const infoBox = createElement('div', 'mb-6 p-4 bg-blue-100 rounded-lg');
+            const infoText1 = createElement('p', 'text-lg font-semibold text-blue-900');
+            infoText1.textContent = `타임머신을 타고 ${INVESTMENT_START.year}년 ${INVESTMENT_START.month}월로 돌아갔습니다!`;
+            const infoText2 = createElement('p', 'text-blue-800 mt-2');
+            infoText2.textContent = '당신은 1,000만원을 가지고 있습니다. 어디에 투자하시겠습니까?';
+            const infoText3 = createElement('p', 'text-blue-700 mt-1 text-sm');
+            infoText3.textContent = '💡 현금으로 보유하면 매년 2%의 이자가 복리로 붙습니다.';
+            infoBox.appendChild(infoText1);
+            infoBox.appendChild(infoText2);
+            infoBox.appendChild(infoText3);
+            container.appendChild(infoBox);
+            
+            const grid = createElement('div', 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6');
+            
+            Object.entries(companies).forEach(([ticker, info]) => {
+                const card = createElement('div', `border-2 rounded-lg p-4 hover:border-blue-500 transition ${ticker === 'CASH' ? 'bg-green-50 border-green-300' : ''}`);
+                
+                const header = createElement('div', 'flex items-center justify-between mb-3');
+                const title = createElement('h3', 'font-bold text-lg');
+                title.textContent = getDisplayName(ticker);
+                title.style.color = info.color;
+                header.appendChild(title);
+                
+                if (ticker === 'CASH') {
+                    const badge = createElement('span', 'text-xs bg-green-600 text-white px-2 py-1 rounded');
+                    badge.textContent = '연 2%';
+                    header.appendChild(badge);
+                }
+                card.appendChild(header);
+                
+                const inputGroup = createElement('div', 'mb-2');
+                const label = createElement('label', 'text-xs text-gray-600 block mb-1');
+                label.textContent = '투자 금액 (만원)';
+                inputGroup.appendChild(label);
+                
+                const inputContainer = createElement('div', 'flex gap-2');
+                const input = createElement('input', 'flex-1 border-2 border-gray-300 rounded px-3 py-2 text-sm focus:border-blue-500 outline-none', {
+                    type: 'number',
+                    step: '10',
+                    min: '0',
+                    placeholder: '10만원 단위'
+                });
+                input.value = state.inputValues[ticker] || '';
+                input.addEventListener('input', (e) => {
+                    handleInputChange(ticker, e.target.value);
+                });
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        handleInputSubmit(ticker);
+                    }
+                });
+                
+                const submitBtn = createElement('button', 'bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded text-sm font-semibold');
+                submitBtn.textContent = '확인';
+                submitBtn.addEventListener('click', () => handleInputSubmit(ticker));
+                
+                inputContainer.appendChild(input);
+                inputContainer.appendChild(submitBtn);
+                inputGroup.appendChild(inputContainer);
+                card.appendChild(inputGroup);
+                
+                if (state.portfolio[ticker]) {
+                    const investmentInfo = createElement('div', 'bg-green-50 border border-green-200 rounded p-2 mt-2');
+                    const investmentText = createElement('p', 'text-sm text-green-700 font-semibold');
+                    investmentText.textContent = `투자: ${(state.portfolio[ticker] / 10000).toFixed(0)}만원`;
+                    const cancelBtn = createElement('button', 'text-xs text-red-500 hover:text-red-700 mt-1');
+                    cancelBtn.textContent = '취소';
+                    cancelBtn.addEventListener('click', () => {
+                        delete state.portfolio[ticker];
+                        delete state.inputValues[ticker];
+                        render();
+                    });
+                    investmentInfo.appendChild(investmentText);
+                    investmentInfo.appendChild(cancelBtn);
+                    card.appendChild(investmentInfo);
+                }
+                
+                grid.appendChild(card);
+            });
+            
+            container.appendChild(grid);
+            
+            const totalInvested = Object.values(state.portfolio).reduce((sum, val) => sum + val, 0);
+            const remaining = state.initialInvestment - totalInvested;
+            
+            const summaryBox = createElement('div', 'bg-gray-100 rounded-lg p-4 mb-6');
+            const summaryGrid = createElement('div', 'grid grid-cols-2 md:grid-cols-4 gap-4');
+            
+            const totalDiv = createElement('div');
+            const totalLabel = createElement('p', 'text-sm text-gray-600');
+            totalLabel.textContent = '총 투자금';
+            const totalValue = createElement('p', `text-2xl font-bold ${totalInvested === state.initialInvestment ? 'text-green-600' : totalInvested > state.initialInvestment ? 'text-red-600' : 'text-gray-800'}`);
+            totalValue.textContent = `${totalInvested.toLocaleString()}원`;
+            totalDiv.appendChild(totalLabel);
+            totalDiv.appendChild(totalValue);
+            
+            const remainingDiv = createElement('div');
+            const remainingLabel = createElement('p', 'text-sm text-gray-600');
+            remainingLabel.textContent = '남은 금액';
+            const remainingValue = createElement('p', `text-2xl font-bold ${remaining === 0 ? 'text-gray-400' : remaining < 0 ? 'text-red-600' : 'text-blue-600'}`);
+            remainingValue.textContent = `${remaining.toLocaleString()}원`;
+            remainingDiv.appendChild(remainingLabel);
+            remainingDiv.appendChild(remainingValue);
+            
+            const diversificationDiv = createElement('div');
+            const diversificationLabel = createElement('p', 'text-sm text-gray-600');
+            diversificationLabel.textContent = '분산도';
+            const diversificationValue = createElement('p', 'text-2xl font-bold text-purple-600');
+            diversificationValue.textContent = `${calculateDiversification(state.portfolio)}%`;
+            diversificationDiv.appendChild(diversificationLabel);
+            diversificationDiv.appendChild(diversificationValue);
+            
+            // 투자 성향 추가
+            const investmentStyle = calculateInvestmentStyle(state.portfolio);
+            const styleDiv = createElement('div');
+            const styleLabel = createElement('p', 'text-sm text-gray-600');
+            styleLabel.textContent = '투자 성향';
+            const styleValue = createElement('p', 'text-2xl font-bold');
+            if (investmentStyle.style === '공격형') {
+                styleValue.className = 'text-2xl font-bold text-red-600';
+            } else if (investmentStyle.style === '안정형') {
+                styleValue.className = 'text-2xl font-bold text-blue-600';
+            } else if (investmentStyle.style === '고위험형') {
+                styleValue.className = 'text-2xl font-bold text-orange-600';
+            } else {
+                styleValue.className = 'text-2xl font-bold text-green-600';
+            }
+            styleValue.textContent = investmentStyle.style;
+            const styleDetail = createElement('p', 'text-xs text-gray-500 mt-1');
+            styleDetail.textContent = `공격 ${investmentStyle.aggressive}% / 안정 ${investmentStyle.stable}%`;
+            styleDiv.appendChild(styleLabel);
+            styleDiv.appendChild(styleValue);
+            styleDiv.appendChild(styleDetail);
+            
+            summaryGrid.appendChild(totalDiv);
+            summaryGrid.appendChild(remainingDiv);
+            summaryGrid.appendChild(diversificationDiv);
+            summaryGrid.appendChild(styleDiv);
+            summaryBox.appendChild(summaryGrid);
+            
+            if (totalInvested > state.initialInvestment) {
+                const warning = createElement('div', 'mt-4 bg-red-100 border-2 border-red-400 rounded-lg p-3');
+                const warningText = createElement('p', 'text-red-800 font-semibold text-center');
+                warningText.textContent = '⚠️ 투자 한도를 초과했습니다! 일부 투자를 취소해주세요.';
+                warning.appendChild(warningText);
+                summaryBox.appendChild(warning);
+            }
+            
+            if (totalInvested === state.initialInvestment) {
+                const success = createElement('div', 'mt-4 bg-green-100 border-2 border-green-400 rounded-lg p-3');
+                const successText = createElement('p', 'text-green-800 font-semibold text-center');
+                successText.textContent = '✅ 1,000만원을 모두 투자했습니다!';
+                success.appendChild(successText);
+                summaryBox.appendChild(success);
+            }
+            
+            container.appendChild(summaryBox);
+            
+            const nextBtn = createElement('button', `w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-bold py-4 rounded-lg text-xl transition`, {
+                disabled: totalInvested === 0 || totalInvested > state.initialInvestment
+            });
+            if (totalInvested > state.initialInvestment) {
+                nextBtn.textContent = '❌ 투자 한도 초과';
+            } else if (totalInvested === 0) {
+                nextBtn.textContent = '❌ 투자를 시작하세요';
+            } else {
+                nextBtn.textContent = '⏩ 2년 후 결과 보기';
+            }
+            nextBtn.addEventListener('click', () => {
+                state.stage = 'rebalance';
+                render();
+            });
+            container.appendChild(nextBtn);
+            
+            root.appendChild(container);
+        }
+
+        function renderRebalance() {
+            destroyAllCharts();
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-6xl mx-auto bg-gradient-to-br from-yellow-50 to-orange-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const rebalanceDate = getMonthLabel(REBALANCE_MONTH - 1);
+            const title = createElement('h1', 'text-3xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = `📊 2년차 결과 (${rebalanceDate})`;
+            container.appendChild(title);
+            
+            const totalInvested = Object.values(state.portfolio).reduce((sum, val) => sum + val, 0);
+            const rebalanceValue = calculatePortfolioValue(state.portfolio, REBALANCE_MONTH - 1);
+            const returnRate = ((rebalanceValue / totalInvested - 1) * 100).toFixed(1);
+            
+            const statsGrid = createElement('div', 'grid grid-cols-2 md:grid-cols-4 gap-4 mb-6');
+            
+            const stat1 = createElement('div', 'bg-blue-100 rounded-lg p-4');
+            stat1.innerHTML = '<p class="text-sm text-gray-600">초기 투자금</p><p class="text-2xl font-bold text-gray-800">' + totalInvested.toLocaleString() + '원</p>';
+            
+            const stat2 = createElement('div', 'bg-green-100 rounded-lg p-4');
+            stat2.innerHTML = '<p class="text-sm text-gray-600">현재 자산</p><p class="text-2xl font-bold text-green-600">' + rebalanceValue.toLocaleString() + '원</p>';
+            
+            const stat3 = createElement('div', 'bg-purple-100 rounded-lg p-4');
+            stat3.innerHTML = '<p class="text-sm text-gray-600">수익률</p><p class="text-2xl font-bold text-purple-600">' + returnRate + '%</p>';
+            
+            // 투자 성향 추가
+            const investmentStyle = calculateInvestmentStyle(state.portfolio);
+            const stat4 = createElement('div', 'bg-orange-100 rounded-lg p-4');
+            let styleColor = 'text-gray-800';
+            if (investmentStyle.style === '공격형') styleColor = 'text-red-600';
+            else if (investmentStyle.style === '안정형') styleColor = 'text-blue-600';
+            else if (investmentStyle.style === '고위험형') styleColor = 'text-orange-600';
+            else styleColor = 'text-green-600';
+            stat4.innerHTML = '<p class="text-sm text-gray-600">투자 성향</p><p class="text-2xl font-bold ' + styleColor + '">' + investmentStyle.style + '</p><p class="text-xs text-gray-500 mt-1">공격 ' + investmentStyle.aggressive + '% / 안정 ' + investmentStyle.stable + '%</p>';
+            
+            statsGrid.appendChild(stat1);
+            statsGrid.appendChild(stat2);
+            statsGrid.appendChild(stat3);
+            statsGrid.appendChild(stat4);
+            container.appendChild(statsGrid);
+            
+            // 차트 영역
+            const chartSection = createElement('div', 'mb-6');
+            const chartTitle = createElement('h3', 'font-bold text-xl mb-4');
+            chartTitle.textContent = '📈 2년간 자산 변화';
+            chartSection.appendChild(chartTitle);
+            
+            const chartContainer = createElement('div', 'chart-container');
+            const canvas = createElement('canvas', '', { id: 'rebalanceChart' });
+            chartContainer.appendChild(canvas);
+            chartSection.appendChild(chartContainer);
+            container.appendChild(chartSection);
+            
+            // 차트 데이터 준비 (월별)
+            const labels = [];
+            const datasets = [];
+            
+            // 월별로 데이터 포인트 생성 (매 3개월마다)
+            for (let month = 0; month < REBALANCE_MONTH; month += 3) {
+                labels.push(getMonthLabel(month));
+            }
+            if (labels[labels.length - 1] !== getMonthLabel(REBALANCE_MONTH - 1)) {
+                labels.push(getMonthLabel(REBALANCE_MONTH - 1));
+            }
+            
+            Object.entries(state.portfolio).forEach(([ticker, amount]) => {
+                const data = [];
+                const monthIndices = [];
+                for (let month = 0; month < REBALANCE_MONTH; month += 3) {
+                    monthIndices.push(month);
+                }
+                if (monthIndices[monthIndices.length - 1] !== REBALANCE_MONTH - 1) {
+                    monthIndices.push(REBALANCE_MONTH - 1);
+                }
+                
+                monthIndices.forEach(monthIndex => {
+                    const value = calculatePortfolioValue({ [ticker]: amount }, monthIndex);
+                    data.push(value);
+                });
+                
+                datasets.push({
+                    label: getDisplayName(ticker),
+                    data: data,
+                    borderColor: companies[ticker].color,
+                    backgroundColor: companies[ticker].color + '20',
+                    tension: 0.4
+                });
+            });
+            
+            if (typeof Chart !== 'undefined' && Chart) {
+                const ctx = canvas.getContext('2d');
+                chartInstances.rebalance = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels, datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `${context.dataset.label}: ${(context.parsed.y / 10000).toFixed(0)}만원`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return (value / 10000).toFixed(0) + '만원';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                const errorMsg = createElement('p', 'text-red-500 p-4');
+                errorMsg.textContent = '차트를 표시할 수 없습니다. Chart.js가 로드되지 않았습니다.';
+                chartContainer.appendChild(errorMsg);
+            }
+            
+            // 보유 주식 가치
+            const holdingsSection = createElement('div', 'mb-6');
+            const holdingsTitle = createElement('h3', 'font-bold text-lg mb-4');
+            holdingsTitle.textContent = '현재 보유 주식 가치';
+            holdingsSection.appendChild(holdingsTitle);
+            
+            const holdingsList = createElement('div', 'space-y-2');
+            Object.entries(state.portfolio).forEach(([ticker, amount]) => {
+                const currentValue = calculatePortfolioValue({ [ticker]: amount }, REBALANCE_MONTH - 1);
+                const profit = currentValue - amount;
+                const profitRate = ((currentValue / amount - 1) * 100).toFixed(1);
+                
+                const holdingItem = createElement('div', 'flex justify-between items-center p-3 bg-gray-50 rounded');
+                const tickerName = createElement('span', 'font-semibold');
+                tickerName.textContent = getDisplayName(ticker);
+                tickerName.style.color = companies[ticker].color;
+                
+                const valueDiv = createElement('div', 'text-right');
+                const valueText = createElement('p', 'font-bold');
+                valueText.textContent = `${currentValue.toLocaleString()}원`;
+                const profitText = createElement('p', `text-sm ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`);
+                profitText.textContent = `${profit >= 0 ? '+' : ''}${profit.toLocaleString()}원 (${profitRate}%)`;
+                valueDiv.appendChild(valueText);
+                valueDiv.appendChild(profitText);
+                
+                holdingItem.appendChild(tickerName);
+                holdingItem.appendChild(valueDiv);
+                holdingsList.appendChild(holdingItem);
+            });
+            holdingsSection.appendChild(holdingsList);
+            container.appendChild(holdingsSection);
+            
+            // 재구성 선택
+            const rebalanceBox = createElement('div', 'bg-yellow-100 border-2 border-yellow-400 rounded-lg p-6 mb-6');
+            const rebalanceTitle = createElement('h3', 'font-bold text-xl mb-4 text-yellow-900');
+            rebalanceTitle.textContent = '🤔 포트폴리오를 재구성하시겠습니까?';
+            const rebalanceText = createElement('p', 'text-yellow-800 mb-4');
+            rebalanceText.textContent = `현재 자산 ${rebalanceValue.toLocaleString()}원을 다시 배분할 수 있습니다. 그대로 유지하거나, 새롭게 구성할 수 있습니다.`;
+            
+            const rebalanceButtons = createElement('div', 'grid grid-cols-2 gap-4');
+            const keepBtn = createElement('button', 'bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 rounded-lg');
+            keepBtn.textContent = '그대로 유지하기';
+            keepBtn.addEventListener('click', () => {
+                // 그대로 유지할 경우 rebalancePortfolio를 현재 포트폴리오로 복사
+                state.rebalancePortfolio = {};
+                Object.keys(state.portfolio).forEach(ticker => {
+                    const currentValue = calculatePortfolioValue({ [ticker]: state.portfolio[ticker] }, REBALANCE_MONTH - 1);
+                    state.rebalancePortfolio[ticker] = currentValue;
+                });
+                state.rebalanced = true;
+                state.stage = 'final';
+                render();
+            });
+            
+            const rebalanceBtn = createElement('button', 'bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg');
+            rebalanceBtn.textContent = '재구성하기';
+            rebalanceBtn.addEventListener('click', () => {
+                state.stage = 'rebalanceInput';
+                render();
+            });
+            
+            rebalanceButtons.appendChild(keepBtn);
+            rebalanceButtons.appendChild(rebalanceBtn);
+            rebalanceBox.appendChild(rebalanceTitle);
+            rebalanceBox.appendChild(rebalanceText);
+            rebalanceBox.appendChild(rebalanceButtons);
+            container.appendChild(rebalanceBox);
+            
+            root.appendChild(container);
+        }
+
+        function renderRebalanceInput() {
+            destroyAllCharts();
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-6xl mx-auto bg-gradient-to-br from-orange-50 to-red-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const rebalanceDate = getMonthLabel(REBALANCE_MONTH - 1);
+            const title = createElement('h1', 'text-3xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = `🔄 포트폴리오 재구성 (${rebalanceDate})`;
+            container.appendChild(title);
+            
+            const rebalanceValue = calculatePortfolioValue(state.portfolio, REBALANCE_MONTH - 1);
+            
+            const infoBox = createElement('div', 'mb-6 p-4 bg-orange-100 rounded-lg');
+            const infoText1 = createElement('p', 'text-lg font-semibold text-orange-900');
+            infoText1.textContent = `2년 후, 당신의 자산은 ${rebalanceValue.toLocaleString()}원이 되었습니다!`;
+            const infoText2 = createElement('p', 'text-orange-800 mt-2');
+            infoText2.textContent = '이 금액을 다시 배분하여 2023년 4월부터 2025년 12월까지 투자할 수 있습니다.';
+            infoBox.appendChild(infoText1);
+            infoBox.appendChild(infoText2);
+            container.appendChild(infoBox);
+            
+            // 투자 입력 그리드 (setup과 동일한 구조)
+            const grid = createElement('div', 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6');
+            
+            Object.entries(companies).forEach(([ticker, info]) => {
+                const card = createElement('div', `border-2 rounded-lg p-4 hover:border-orange-500 transition ${ticker === 'CASH' ? 'bg-green-50 border-green-300' : ''}`);
+                
+                const header = createElement('div', 'flex items-center justify-between mb-3');
+                const title = createElement('h3', 'font-bold text-lg');
+                title.textContent = getDisplayName(ticker);
+                title.style.color = info.color;
+                header.appendChild(title);
+                
+                if (ticker === 'CASH') {
+                    const badge = createElement('span', 'text-xs bg-green-600 text-white px-2 py-1 rounded');
+                    badge.textContent = '연 2%';
+                    header.appendChild(badge);
+                }
+                card.appendChild(header);
+                
+                const inputGroup = createElement('div', 'mb-2');
+                const label = createElement('label', 'text-xs text-gray-600 block mb-1');
+                label.textContent = '투자 금액 (만원)';
+                inputGroup.appendChild(label);
+                
+                const inputContainer = createElement('div', 'flex gap-2');
+                const input = createElement('input', 'flex-1 border-2 border-gray-300 rounded px-3 py-2 text-sm focus:border-orange-500 outline-none', {
+                    type: 'number',
+                    step: '10',
+                    min: '0',
+                    placeholder: '10만원 단위'
+                });
+                input.value = state.rebalanceInputValues[ticker] || '';
+                input.addEventListener('input', (e) => {
+                    handleRebalanceInputChange(ticker, e.target.value);
+                });
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        handleRebalanceInputSubmit(ticker);
+                    }
+                });
+                
+                const submitBtn = createElement('button', 'bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded text-sm font-semibold');
+                submitBtn.textContent = '확인';
+                submitBtn.addEventListener('click', () => handleRebalanceInputSubmit(ticker));
+                
+                inputContainer.appendChild(input);
+                inputContainer.appendChild(submitBtn);
+                inputGroup.appendChild(inputContainer);
+                card.appendChild(inputGroup);
+                
+                if (state.rebalancePortfolio[ticker]) {
+                    const investmentInfo = createElement('div', 'bg-green-50 border border-green-200 rounded p-2 mt-2');
+                    const investmentText = createElement('p', 'text-sm text-green-700 font-semibold');
+                    investmentText.textContent = `투자: ${(state.rebalancePortfolio[ticker] / 10000).toFixed(0)}만원`;
+                    const cancelBtn = createElement('button', 'text-xs text-red-500 hover:text-red-700 mt-1');
+                    cancelBtn.textContent = '취소';
+                    cancelBtn.addEventListener('click', () => {
+                        delete state.rebalancePortfolio[ticker];
+                        delete state.rebalanceInputValues[ticker];
+                        render();
+                    });
+                    investmentInfo.appendChild(investmentText);
+                    investmentInfo.appendChild(cancelBtn);
+                    card.appendChild(investmentInfo);
+                }
+                
+                grid.appendChild(card);
+            });
+            
+            container.appendChild(grid);
+            
+            // 예상 차트 (투자 입력 그리드 아래로 이동)
+            const totalRebalanceInvested = Object.values(state.rebalancePortfolio).reduce((sum, val) => sum + val, 0);
+            if (Object.keys(state.rebalancePortfolio).length > 0 && totalRebalanceInvested > 0) {
+                const chartSection = createElement('div', 'mb-6');
+                const chartTitle = createElement('h3', 'font-bold text-xl mb-4');
+                chartTitle.textContent = '📈 2023년 4월~2025년 12월 예상 자산 변화';
+                chartSection.appendChild(chartTitle);
+                
+                const chartContainer = createElement('div', 'chart-container');
+                const canvas = createElement('canvas', '', { id: 'rebalanceChart' });
+                chartContainer.appendChild(canvas);
+                chartSection.appendChild(chartContainer);
+                container.appendChild(chartSection);
+                
+                const labels = [];
+                const datasets = [];
+                
+                // 월별로 데이터 포인트 생성 (매 3개월마다)
+                for (let month = REBALANCE_MONTH; month < TOTAL_MONTHS; month += 3) {
+                    labels.push(getMonthLabel(month));
+                }
+                if (labels[labels.length - 1] !== getMonthLabel(TOTAL_MONTHS - 1)) {
+                    labels.push(getMonthLabel(TOTAL_MONTHS - 1));
+                }
+                
+                Object.entries(state.rebalancePortfolio).forEach(([ticker, amount]) => {
+                    const data = [];
+                    const monthIndices = [];
+                    for (let month = REBALANCE_MONTH; month < TOTAL_MONTHS; month += 3) {
+                        monthIndices.push(month);
+                    }
+                    if (monthIndices[monthIndices.length - 1] !== TOTAL_MONTHS - 1) {
+                        monthIndices.push(TOTAL_MONTHS - 1);
+                    }
+                    
+                    monthIndices.forEach(monthIndex => {
+                        let value = amount;
+                        for (let i = REBALANCE_MONTH; i <= monthIndex && i < companies[ticker].returns.length; i++) {
+                            value *= companies[ticker].returns[i];
+                        }
+                        data.push(Math.round(value));
+                    });
+                    
+                    datasets.push({
+                        label: getDisplayName(ticker),
+                        data: data,
+                        borderColor: companies[ticker].color,
+                        backgroundColor: companies[ticker].color + '20',
+                        tension: 0.4
+                    });
+                });
+                
+                if (typeof Chart !== 'undefined' && Chart) {
+                    const ctx = canvas.getContext('2d');
+                    chartInstances.rebalance = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: true },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            return `${context.dataset.label}: ${(context.parsed.y / 10000).toFixed(0)}만원`;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        callback: function(value) {
+                                            return (value / 10000).toFixed(0) + '만원';
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    const errorMsg = createElement('p', 'text-red-500 p-4');
+                    errorMsg.textContent = '차트를 표시할 수 없습니다. Chart.js가 로드되지 않았습니다.';
+                    chartContainer.appendChild(errorMsg);
+                }
+            }
+            
+            // totalRebalanceInvested는 이미 위에서 선언됨
+            const remaining = rebalanceValue - totalRebalanceInvested;
+            
+            const summaryBox = createElement('div', 'bg-gray-100 rounded-lg p-4 mb-6');
+            const summaryGrid = createElement('div', 'grid grid-cols-2 md:grid-cols-4 gap-4');
+            
+            const totalDiv = createElement('div');
+            const totalLabel = createElement('p', 'text-sm text-gray-600');
+            totalLabel.textContent = '총 재투자금';
+            const totalValue = createElement('p', `text-2xl font-bold ${totalRebalanceInvested === rebalanceValue ? 'text-green-600' : totalRebalanceInvested > rebalanceValue ? 'text-red-600' : 'text-gray-800'}`);
+            totalValue.textContent = `${totalRebalanceInvested.toLocaleString()}원`;
+            totalDiv.appendChild(totalLabel);
+            totalDiv.appendChild(totalValue);
+            
+            const remainingDiv = createElement('div');
+            const remainingLabel = createElement('p', 'text-sm text-gray-600');
+            remainingLabel.textContent = '남은 금액';
+            const remainingValue = createElement('p', `text-2xl font-bold ${remaining === 0 ? 'text-gray-400' : remaining < 0 ? 'text-red-600' : 'text-blue-600'}`);
+            remainingValue.textContent = `${remaining.toLocaleString()}원`;
+            remainingDiv.appendChild(remainingLabel);
+            remainingDiv.appendChild(remainingValue);
+            
+            const diversificationDiv = createElement('div');
+            const diversificationLabel = createElement('p', 'text-sm text-gray-600');
+            diversificationLabel.textContent = '분산도';
+            const diversificationValue = createElement('p', 'text-2xl font-bold text-purple-600');
+            diversificationValue.textContent = `${calculateDiversification(state.rebalancePortfolio)}%`;
+            diversificationDiv.appendChild(diversificationLabel);
+            diversificationDiv.appendChild(diversificationValue);
+            
+            // 투자 성향 추가
+            const investmentStyle = calculateInvestmentStyle(state.rebalancePortfolio);
+            const styleDiv = createElement('div');
+            const styleLabel = createElement('p', 'text-sm text-gray-600');
+            styleLabel.textContent = '투자 성향';
+            const styleValue = createElement('p', 'text-2xl font-bold');
+            if (investmentStyle.style === '공격형') {
+                styleValue.className = 'text-2xl font-bold text-red-600';
+            } else if (investmentStyle.style === '안정형') {
+                styleValue.className = 'text-2xl font-bold text-blue-600';
+            } else if (investmentStyle.style === '고위험형') {
+                styleValue.className = 'text-2xl font-bold text-orange-600';
+            } else {
+                styleValue.className = 'text-2xl font-bold text-green-600';
+            }
+            styleValue.textContent = investmentStyle.style;
+            const styleDetail = createElement('p', 'text-xs text-gray-500 mt-1');
+            styleDetail.textContent = `공격 ${investmentStyle.aggressive}% / 안정 ${investmentStyle.stable}%`;
+            styleDiv.appendChild(styleLabel);
+            styleDiv.appendChild(styleValue);
+            styleDiv.appendChild(styleDetail);
+            
+            summaryGrid.appendChild(totalDiv);
+            summaryGrid.appendChild(remainingDiv);
+            summaryGrid.appendChild(diversificationDiv);
+            summaryGrid.appendChild(styleDiv);
+            summaryBox.appendChild(summaryGrid);
+            
+            if (totalRebalanceInvested > rebalanceValue) {
+                const warning = createElement('div', 'mt-4 bg-red-100 border-2 border-red-400 rounded-lg p-3');
+                const warningText = createElement('p', 'text-red-800 font-semibold text-center');
+                warningText.textContent = '⚠️ 투자 한도를 초과했습니다! 일부 투자를 취소해주세요.';
+                warning.appendChild(warningText);
+                summaryBox.appendChild(warning);
+            }
+            
+            if (totalRebalanceInvested === rebalanceValue) {
+                const success = createElement('div', 'mt-4 bg-green-100 border-2 border-green-400 rounded-lg p-3');
+                const successText = createElement('p', 'text-green-800 font-semibold text-center');
+                successText.textContent = '✅ 모든 자산을 재투자했습니다!';
+                success.appendChild(successText);
+                summaryBox.appendChild(success);
+            }
+            
+            if (totalRebalanceInvested < rebalanceValue && totalRebalanceInvested > 0) {
+                const info = createElement('div', 'mt-4 bg-blue-100 border-2 border-blue-400 rounded-lg p-3');
+                const infoText = createElement('p', 'text-blue-800 font-semibold text-center');
+                infoText.textContent = `💡 남은 ${((rebalanceValue - totalRebalanceInvested) / 10000).toFixed(0)}만원은 자동으로 현금 보유됩니다.`;
+                info.appendChild(infoText);
+                summaryBox.appendChild(info);
+            }
+            
+            container.appendChild(summaryBox);
+            
+            const buttonContainer = createElement('div', 'grid grid-cols-2 gap-4');
+            const backBtn = createElement('button', 'bg-gray-500 hover:bg-gray-600 text-white font-bold py-4 rounded-lg text-lg');
+            backBtn.textContent = '← 뒤로 가기';
+            backBtn.addEventListener('click', () => {
+                state.stage = 'rebalance';
+                render();
+            });
+            
+            const nextBtn = createElement('button', `bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-bold py-4 rounded-lg text-lg transition`, {
+                disabled: totalRebalanceInvested > rebalanceValue
+            });
+            nextBtn.textContent = totalRebalanceInvested > rebalanceValue ? '❌ 투자 한도 초과' : '⏩ 최종 결과 보기';
+            nextBtn.addEventListener('click', () => {
+                const remaining = rebalanceValue - totalRebalanceInvested;
+                if (remaining > 0) {
+                    state.rebalancePortfolio['CASH'] = (state.rebalancePortfolio['CASH'] || 0) + remaining;
+                }
+                state.rebalanced = true;
+                state.stage = 'final';
+                render();
+            });
+            
+            buttonContainer.appendChild(backBtn);
+            buttonContainer.appendChild(nextBtn);
+            container.appendChild(buttonContainer);
+            
+            root.appendChild(container);
+        }
+
+        function renderFinal() {
+            destroyAllCharts();
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-7xl mx-auto bg-gradient-to-br from-green-50 to-blue-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const finalDate = getMonthLabel(TOTAL_MONTHS - 1);
+            const title = createElement('h1', 'text-4xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = `🎉 투자 결과 (${finalDate})`;
+            container.appendChild(title);
+            
+            const revealBtn = createElement('button', 'bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg text-lg transition shadow-lg');
+            revealBtn.style.margin = '0 auto';
+            revealBtn.style.display = 'block';
+            revealBtn.textContent = '🔓 회사 이름 공개하기';
+            revealBtn.addEventListener('click', () => {
+                state.stage = 'returnTable';
+                render();
+            });
+            container.appendChild(revealBtn);
+            
+            const totalInvested = Object.values(state.portfolio).reduce((sum, val) => sum + val, 0);
+            
+            let finalValue;
+            if (state.rebalanced) {
+                finalValue = 0;
+                Object.entries(state.rebalancePortfolio).forEach(([ticker, amount]) => {
+                    let value = amount;
+                    for (let i = REBALANCE_MONTH; i < TOTAL_MONTHS && i < companies[ticker].returns.length; i++) {
+                        value *= companies[ticker].returns[i];
+                    }
+                    finalValue += value;
+                });
+                finalValue = Math.round(finalValue);
+            } else {
+                finalValue = calculatePortfolioValue(state.portfolio, TOTAL_MONTHS - 1);
+            }
+            
+            const totalProfit = finalValue - state.initialInvestment;
+            const monthsElapsed = TOTAL_MONTHS;
+            const yearsElapsed = monthsElapsed / 12;
+            const returnRate = ((finalValue / state.initialInvestment - 1) * 100).toFixed(1);
+            
+            const statsGrid = createElement('div', 'grid grid-cols-4 gap-4 mb-8');
+            statsGrid.innerHTML = `
+                <div class="bg-blue-100 rounded-lg p-4">
+                    <p class="text-sm text-gray-600">초기 투자금</p>
+                    <p class="text-2xl font-bold text-gray-800">${totalInvested.toLocaleString()}원</p>
+                </div>
+                <div class="bg-green-100 rounded-lg p-4">
+                    <p class="text-sm text-gray-600">최종 자산</p>
+                    <p class="text-2xl font-bold text-green-600">${finalValue.toLocaleString()}원</p>
+                </div>
+                <div class="bg-purple-100 rounded-lg p-4">
+                    <p class="text-sm text-gray-600">총 수익</p>
+                    <p class="text-2xl font-bold text-purple-600">+${totalProfit.toLocaleString()}원</p>
+                </div>
+                <div class="bg-orange-100 rounded-lg p-4">
+                    <p class="text-sm text-gray-600">수익률</p>
+                    <p class="text-2xl font-bold text-orange-600">+${returnRate}%</p>
+                </div>
+            `;
+            container.appendChild(statsGrid);
+            
+            // 월별 차트
+            const chartSection = createElement('div', 'mb-8');
+            const chartTitle = createElement('h3', 'font-bold text-xl mb-4');
+            chartTitle.textContent = '📈 월별 총 자산 변화';
+            chartSection.appendChild(chartTitle);
+            
+            const chartContainer = createElement('div', 'chart-container');
+            const canvas = createElement('canvas', '', { id: 'finalChart' });
+            chartContainer.appendChild(canvas);
+            chartSection.appendChild(chartContainer);
+            container.appendChild(chartSection);
+            
+            const labels = [];
+            const data = [];
+            
+            // 월별로 데이터 포인트 생성 (매 3개월마다)
+            for (let month = 0; month < TOTAL_MONTHS; month += 3) {
+                labels.push(getMonthLabel(month));
+            }
+            if (labels[labels.length - 1] !== getMonthLabel(TOTAL_MONTHS - 1)) {
+                labels.push(getMonthLabel(TOTAL_MONTHS - 1));
+            }
+            
+            const monthIndices = [];
+            for (let month = 0; month < TOTAL_MONTHS; month += 3) {
+                monthIndices.push(month);
+            }
+            if (monthIndices[monthIndices.length - 1] !== TOTAL_MONTHS - 1) {
+                monthIndices.push(TOTAL_MONTHS - 1);
+            }
+            
+            monthIndices.forEach(monthIndex => {
+                let totalValue = 0;
+                if (monthIndex < REBALANCE_MONTH || !state.rebalanced) {
+                    totalValue = calculatePortfolioValue(state.portfolio, monthIndex);
+                } else {
+                    // 리밸런싱 후 포트폴리오 계산
+                    Object.entries(state.rebalancePortfolio).forEach(([ticker, amount]) => {
+                        let value = amount;
+                        for (let i = REBALANCE_MONTH; i <= monthIndex && i < companies[ticker].returns.length; i++) {
+                            value *= companies[ticker].returns[i];
+                        }
+                        totalValue += value;
+                    });
+                }
+                data.push(Math.round(totalValue));
+            });
+            
+            if (typeof Chart !== 'undefined' && Chart) {
+                const ctx = canvas.getContext('2d');
+                chartInstances.final = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '총 자산',
+                            data: data,
+                            borderColor: '#3b82f6',
+                            backgroundColor: '#3b82f620',
+                            tension: 0.4,
+                            borderWidth: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `${context.dataset.label}: ${(context.parsed.y / 10000).toFixed(0)}만원`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return (value / 10000).toFixed(0) + '만원';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                const errorMsg = createElement('p', 'text-red-500 p-4');
+                errorMsg.textContent = '차트를 표시할 수 없습니다. Chart.js가 로드되지 않았습니다.';
+                chartContainer.appendChild(errorMsg);
+            }
+            
+            // 파이 차트와 종목별 가치
+            const bottomGrid = createElement('div', 'grid grid-cols-2 gap-6 mb-8');
+            
+            // 파이 차트
+            const pieSection = createElement('div');
+            const pieTitle = createElement('h3', 'font-bold text-xl mb-4');
+            pieTitle.textContent = '🥧 최종 포트폴리오 구성';
+            pieSection.appendChild(pieTitle);
+            
+            const pieContainer = createElement('div', 'chart-container');
+            const pieCanvas = createElement('canvas', '', { id: 'pieChart' });
+            pieContainer.appendChild(pieCanvas);
+            pieSection.appendChild(pieContainer);
+            
+            const pieData = state.rebalanced 
+                ? Object.entries(state.rebalancePortfolio).map(([ticker, amount]) => {
+                    let value = amount;
+                    for (let i = REBALANCE_MONTH; i < TOTAL_MONTHS && i < companies[ticker].returns.length; i++) {
+                        value *= companies[ticker].returns[i];
+                    }
+                    return {
+                        name: getDisplayName(ticker),
+                        value: Math.round(value),
+                        color: companies[ticker].color
+                    };
+                })
+                : Object.entries(state.portfolio).map(([ticker, amount]) => ({
+                    name: getDisplayName(ticker),
+                    value: calculatePortfolioValue({ [ticker]: amount }, TOTAL_MONTHS - 1),
+                    color: companies[ticker].color
+                }));
+            
+            if (typeof Chart !== 'undefined' && Chart) {
+                const pieCtx = pieCanvas.getContext('2d');
+                chartInstances.pie = new Chart(pieCtx, {
+                    type: 'pie',
+                    data: {
+                        labels: pieData.map(d => d.name),
+                        datasets: [{
+                            data: pieData.map(d => d.value),
+                            backgroundColor: pieData.map(d => d.color)
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true, position: 'bottom' },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const label = context.label || '';
+                                        const value = context.parsed || 0;
+                                        const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                        const percentage = ((value / total) * 100).toFixed(0);
+                                        return `${label}: ${value.toLocaleString()}원 (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                const errorMsg = createElement('p', 'text-red-500 p-4');
+                errorMsg.textContent = '파이 차트를 표시할 수 없습니다. Chart.js가 로드되지 않았습니다.';
+                pieContainer.appendChild(errorMsg);
+            }
+            
+            bottomGrid.appendChild(pieSection);
+            
+            // 종목별 최종 가치
+            const holdingsSection = createElement('div');
+            const holdingsTitle = createElement('h3', 'font-bold text-xl mb-4');
+            holdingsTitle.textContent = '📊 종목별 최종 가치';
+            holdingsSection.appendChild(holdingsTitle);
+            
+            const holdingsList = createElement('div', 'space-y-2');
+            const sortedHoldings = (state.rebalanced ? Object.entries(state.rebalancePortfolio) : Object.entries(state.portfolio))
+                .sort((a, b) => {
+                    let valueA, valueB;
+                    if (state.rebalanced) {
+                        valueA = a[1];
+                        for (let i = REBALANCE_MONTH; i < TOTAL_MONTHS && i < companies[a[0]].returns.length; i++) {
+                            valueA *= companies[a[0]].returns[i];
+                        }
+                        valueB = b[1];
+                        for (let i = REBALANCE_MONTH; i < TOTAL_MONTHS && i < companies[b[0]].returns.length; i++) {
+                            valueB *= companies[b[0]].returns[i];
+                        }
+                    } else {
+                        valueA = calculatePortfolioValue({ [a[0]]: a[1] }, TOTAL_MONTHS - 1);
+                        valueB = calculatePortfolioValue({ [b[0]]: b[1] }, TOTAL_MONTHS - 1);
+                    }
+                    return valueB - valueA;
+                });
+            
+            sortedHoldings.forEach(([ticker, amount]) => {
+                let finalVal, initialAmount, profit, profitRate;
+                
+                if (state.rebalanced) {
+                    finalVal = amount;
+                    for (let i = REBALANCE_MONTH; i < TOTAL_MONTHS && i < companies[ticker].returns.length; i++) {
+                        finalVal *= companies[ticker].returns[i];
+                    }
+                    finalVal = Math.round(finalVal);
+                    initialAmount = amount;
+                    profit = finalVal - initialAmount;
+                    profitRate = ((finalVal / initialAmount - 1) * 100).toFixed(1);
+                } else {
+                    finalVal = calculatePortfolioValue({ [ticker]: amount }, TOTAL_MONTHS - 1);
+                    initialAmount = amount;
+                    profit = finalVal - initialAmount;
+                    profitRate = ((finalVal / initialAmount - 1) * 100).toFixed(1);
+                }
+                
+                const holdingItem = createElement('div', 'flex justify-between items-center p-3 bg-gray-50 rounded');
+                const nameDiv = createElement('div', 'flex items-center gap-2');
+                const tickerName = createElement('span', 'font-semibold');
+                tickerName.textContent = getDisplayName(ticker);
+                tickerName.style.color = companies[ticker].color;
+                nameDiv.appendChild(tickerName);
+                
+                if (state.revealNames) {
+                    const codeName = createElement('span', 'text-xs text-gray-500');
+                    codeName.textContent = `(${companies[ticker].codeName})`;
+                    nameDiv.appendChild(codeName);
+                }
+                
+                const valueDiv = createElement('div', 'text-right');
+                const valueText = createElement('p', 'font-bold');
+                valueText.textContent = `${finalVal.toLocaleString()}원`;
+                const profitText = createElement('p', `text-sm ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`);
+                profitText.textContent = `${profit >= 0 ? '+' : ''}${profitRate}%`;
+                valueDiv.appendChild(valueText);
+                valueDiv.appendChild(profitText);
+                
+                holdingItem.appendChild(nameDiv);
+                holdingItem.appendChild(valueDiv);
+                holdingsList.appendChild(holdingItem);
+            });
+            
+            holdingsSection.appendChild(holdingsList);
+            bottomGrid.appendChild(holdingsSection);
+            container.appendChild(bottomGrid);
+            
+            // 투자 분석
+            const analysisBox = createElement('div', 'bg-gray-100 rounded-lg p-6');
+            const analysisTitle = createElement('h3', 'font-bold text-xl mb-4');
+            analysisTitle.textContent = '💡 투자 분석';
+            analysisBox.appendChild(analysisTitle);
+            
+            const analysisGrid = createElement('div', 'grid grid-cols-1 md:grid-cols-3 gap-4');
+            
+            const diversificationDiv = createElement('div');
+            const divLabel = createElement('p', 'text-sm text-gray-600 mb-2');
+            divLabel.textContent = '분산 투자 정도';
+            const divBarContainer = createElement('div', 'flex items-center');
+            const divBarBg = createElement('div', 'flex-1 bg-gray-300 rounded-full h-4');
+            const divBar = createElement('div', 'bg-purple-500 h-4 rounded-full');
+            const diversification = calculateDiversification(state.rebalanced ? state.rebalancePortfolio : state.portfolio);
+            divBar.style.width = `${diversification}%`;
+            const divValue = createElement('span', 'ml-2 font-bold');
+            divValue.textContent = `${diversification}%`;
+            divBarBg.appendChild(divBar);
+            divBarContainer.appendChild(divBarBg);
+            divBarContainer.appendChild(divValue);
+            const divType = createElement('p', 'text-xs text-gray-500 mt-1');
+            divType.textContent = diversification < 30 ? '집중 투자형' : diversification < 60 ? '중간 분산형' : '고분산형';
+            diversificationDiv.appendChild(divLabel);
+            diversificationDiv.appendChild(divBarContainer);
+            diversificationDiv.appendChild(divType);
+            
+            // 투자 성향 추가
+            const finalPortfolio = state.rebalanced ? state.rebalancePortfolio : state.portfolio;
+            const investmentStyle = calculateInvestmentStyle(finalPortfolio);
+            const styleDiv = createElement('div');
+            const styleLabel = createElement('p', 'text-sm text-gray-600 mb-2');
+            styleLabel.textContent = '투자 성향';
+            const styleValue = createElement('p', 'text-3xl font-bold mb-2');
+            if (investmentStyle.style === '공격형') {
+                styleValue.className = 'text-3xl font-bold mb-2 text-red-600';
+            } else if (investmentStyle.style === '안정형') {
+                styleValue.className = 'text-3xl font-bold mb-2 text-blue-600';
+            } else if (investmentStyle.style === '고위험형') {
+                styleValue.className = 'text-3xl font-bold mb-2 text-orange-600';
+            } else {
+                styleValue.className = 'text-3xl font-bold mb-2 text-green-600';
+            }
+            styleValue.textContent = investmentStyle.style;
+            const styleBarContainer = createElement('div', 'space-y-1');
+            const aggressiveBar = createElement('div', 'flex items-center');
+            const aggressiveBarBg = createElement('div', 'flex-1 bg-gray-200 rounded-full h-2');
+            const aggressiveBarFill = createElement('div', 'bg-red-500 h-2 rounded-full');
+            aggressiveBarFill.style.width = `${investmentStyle.aggressive}%`;
+            aggressiveBarBg.appendChild(aggressiveBarFill);
+            aggressiveBar.appendChild(aggressiveBarBg);
+            aggressiveBar.appendChild(createElement('span', 'ml-2 text-xs text-gray-600'));
+            aggressiveBar.lastChild.textContent = `공격 ${investmentStyle.aggressive}%`;
+            
+            const stableBar = createElement('div', 'flex items-center');
+            const stableBarBg = createElement('div', 'flex-1 bg-gray-200 rounded-full h-2');
+            const stableBarFill = createElement('div', 'bg-blue-500 h-2 rounded-full');
+            stableBarFill.style.width = `${investmentStyle.stable}%`;
+            stableBarBg.appendChild(stableBarFill);
+            stableBar.appendChild(stableBarBg);
+            stableBar.appendChild(createElement('span', 'ml-2 text-xs text-gray-600'));
+            stableBar.lastChild.textContent = `안정 ${investmentStyle.stable}%`;
+            
+            styleBarContainer.appendChild(aggressiveBar);
+            styleBarContainer.appendChild(stableBar);
+            styleDiv.appendChild(styleLabel);
+            styleDiv.appendChild(styleValue);
+            styleDiv.appendChild(styleBarContainer);
+            
+            const avgReturnDiv = createElement('div');
+            const avgLabel = createElement('p', 'text-sm text-gray-600 mb-2');
+            avgLabel.textContent = '연평균 수익률';
+            const avgValue = createElement('p', 'text-3xl font-bold text-green-600');
+            avgValue.textContent = `${((Math.pow(finalValue / totalInvested, 1/yearsElapsed) - 1) * 100).toFixed(1)}%`;
+            avgReturnDiv.appendChild(avgLabel);
+            avgReturnDiv.appendChild(avgValue);
+            
+            analysisGrid.appendChild(diversificationDiv);
+            analysisGrid.appendChild(styleDiv);
+            analysisGrid.appendChild(avgReturnDiv);
+            analysisBox.appendChild(analysisGrid);
+            container.appendChild(analysisBox);
+            
+            const buttonContainer = createElement('div', 'grid grid-cols-2 gap-4 mt-6');
+            
+            const viewAllBtn = createElement('button', 'bg-purple-500 hover:bg-purple-600 text-white font-bold py-4 rounded-lg text-xl');
+            viewAllBtn.textContent = '📊 전체 회사 보기';
+            viewAllBtn.addEventListener('click', () => {
+                state.stage = 'companyDetails';
+                state.selectedCompany = null;
+                render();
+            });
+            buttonContainer.appendChild(viewAllBtn);
+            
+            const restartBtn = createElement('button', 'bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-lg text-xl');
+            restartBtn.textContent = '🔄 다시 시작하기';
+            restartBtn.addEventListener('click', () => {
+                state.stage = 'setup';
+                state.portfolio = {};
+                state.inputValues = {};
+                state.rebalancePortfolio = {};
+                state.rebalanceInputValues = {};
+                state.rebalanced = false;
+                state.revealNames = false;
+                state.selectedCompany = null;
+                destroyAllCharts();
+                render();
+            });
+            buttonContainer.appendChild(restartBtn);
+            
+            container.appendChild(buttonContainer);
+            
+            root.appendChild(container);
+        }
+
+        function renderCompanyDetails() {
+            destroyAllCharts();
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-7xl mx-auto bg-gradient-to-br from-indigo-50 to-purple-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const title = createElement('h1', 'text-4xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = '📊 전체 회사별 수익률 상세 분석';
+            container.appendChild(title);
+            
+            // 회사 목록 그리드
+            if (!state.selectedCompany) {
+                const companyGrid = createElement('div', 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-8');
+                
+                Object.entries(companies).forEach(([ticker, info]) => {
+                    if (ticker === 'CASH') return; // 현금 제외
+                    
+                    const companyCard = createElement('div', 'border-2 rounded-lg p-4 hover:border-purple-500 transition cursor-pointer bg-white hover:shadow-lg');
+                    companyCard.style.borderColor = info.color;
+                    companyCard.addEventListener('click', () => {
+                        state.selectedCompany = ticker;
+                        render();
+                    });
+                    
+                    const companyName = createElement('h3', 'font-bold text-lg mb-2');
+                    companyName.textContent = info.name;
+                    companyName.style.color = info.color;
+                    companyCard.appendChild(companyName);
+                    
+                    const companyCode = createElement('p', 'text-sm text-gray-500');
+                    companyCode.textContent = info.codeName;
+                    companyCard.appendChild(companyCode);
+                    
+                    // 2021년 4월부터 2025년 12월까지의 총 수익률 계산
+                    let totalReturn = 1.0;
+                    for (let i = 0; i < TOTAL_MONTHS && i < info.returns.length; i++) {
+                        totalReturn *= info.returns[i];
+                    }
+                    const returnPercent = ((totalReturn - 1) * 100).toFixed(1);
+                    
+                    const returnText = createElement('p', `text-lg font-semibold mt-2 ${returnPercent >= 0 ? 'text-green-600' : 'text-red-600'}`);
+                    returnText.textContent = `${returnPercent >= 0 ? '+' : ''}${returnPercent}%`;
+                    companyCard.appendChild(returnText);
+                    
+                    companyGrid.appendChild(companyCard);
+                });
+                
+                container.appendChild(companyGrid);
+                
+                const backBtn = createElement('button', 'w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-4 rounded-lg text-xl');
+                backBtn.textContent = '← 결과 페이지로 돌아가기';
+                backBtn.addEventListener('click', () => {
+                    state.stage = 'final';
+                    state.selectedCompany = null;
+                    render();
+                });
+                container.appendChild(backBtn);
+            } else {
+                // 선택된 회사의 상세 차트
+                const selectedInfo = companies[state.selectedCompany];
+                
+                const header = createElement('div', 'flex items-center justify-between mb-6');
+                const companyTitle = createElement('h2', 'text-3xl font-bold');
+                companyTitle.textContent = selectedInfo.name;
+                companyTitle.style.color = selectedInfo.color;
+                header.appendChild(companyTitle);
+                
+                const backToListBtn = createElement('button', 'bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg');
+                backToListBtn.textContent = '← 목록으로';
+                backToListBtn.addEventListener('click', () => {
+                    state.selectedCompany = null;
+                    render();
+                });
+                header.appendChild(backToListBtn);
+                container.appendChild(header);
+                
+                // 회사 정보 박스
+                const infoBox = createElement('div', 'bg-gray-100 rounded-lg p-4 mb-6');
+                const infoGrid = createElement('div', 'grid grid-cols-3 gap-4');
+                
+                // 초기 가치 (2021년 4월 기준)
+                const initialValue = 1000000; // 100만원 기준
+                let finalValue = initialValue;
+                for (let i = 0; i < TOTAL_MONTHS && i < selectedInfo.returns.length; i++) {
+                    finalValue *= selectedInfo.returns[i];
+                }
+                const totalReturn = ((finalValue / initialValue - 1) * 100).toFixed(1);
+                const profit = finalValue - initialValue;
+                
+                const stat1 = createElement('div');
+                stat1.innerHTML = `<p class="text-sm text-gray-600">초기 가치 (2021년 4월)</p><p class="text-xl font-bold">${initialValue.toLocaleString()}원</p>`;
+                const stat2 = createElement('div');
+                stat2.innerHTML = `<p class="text-sm text-gray-600">최종 가치 (2025년 12월)</p><p class="text-xl font-bold text-green-600">${Math.round(finalValue).toLocaleString()}원</p>`;
+                const stat3 = createElement('div');
+                stat3.innerHTML = `<p class="text-sm text-gray-600">총 수익률</p><p class="text-xl font-bold ${totalReturn >= 0 ? 'text-green-600' : 'text-red-600'}">${totalReturn >= 0 ? '+' : ''}${totalReturn}%</p>`;
+                
+                infoGrid.appendChild(stat1);
+                infoGrid.appendChild(stat2);
+                infoGrid.appendChild(stat3);
+                infoBox.appendChild(infoGrid);
+                container.appendChild(infoBox);
+                
+                // 개별 회사 차트
+                const chartSection = createElement('div', 'mb-6');
+                const chartTitle = createElement('h3', 'font-bold text-xl mb-4');
+                chartTitle.textContent = `📈 ${selectedInfo.name} 수익률 변화 (2021년 4월 기준)`;
+                chartSection.appendChild(chartTitle);
+                
+                const chartContainer = createElement('div', 'chart-container');
+                chartContainer.style.height = '400px';
+                const chartCanvas = createElement('canvas', '', { id: 'companyChart' });
+                chartContainer.appendChild(chartCanvas);
+                chartSection.appendChild(chartContainer);
+                container.appendChild(chartSection);
+                
+                // 차트 데이터 준비
+                const chartLabels = [];
+                const chartData = [];
+                
+                // 월별로 데이터 포인트 생성 (매월)
+                for (let month = 0; month < TOTAL_MONTHS; month++) {
+                    chartLabels.push(getMonthLabel(month));
+                    
+                    // 2021년 4월(month 0)을 기준으로 수익률 계산
+                    let cumulativeReturn = 1.0;
+                    for (let i = 0; i <= month && i < selectedInfo.returns.length; i++) {
+                        cumulativeReturn *= selectedInfo.returns[i];
+                    }
+                    // 100% 기준으로 변환 (2021년 4월 = 100%)
+                    chartData.push(((cumulativeReturn - 1) * 100).toFixed(1));
+                }
+                
+                if (typeof Chart !== 'undefined' && Chart) {
+                    const ctx = chartCanvas.getContext('2d');
+                    chartInstances.companyChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: chartLabels,
+                            datasets: [{
+                                label: `${selectedInfo.name} 수익률`,
+                                data: chartData,
+                                borderColor: selectedInfo.color,
+                                backgroundColor: selectedInfo.color + '20',
+                                tension: 0.4,
+                                borderWidth: 3,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { 
+                                    display: true,
+                                    position: 'top'
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const value = parseFloat(context.parsed.y);
+                                            const sign = value >= 0 ? '+' : '';
+                                            return `${sign}${value.toFixed(1)}%`;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: false,
+                                    title: {
+                                        display: true,
+                                        text: '수익률 (%)',
+                                        font: {
+                                            size: 14,
+                                            weight: 'bold'
+                                        }
+                                    },
+                                    ticks: {
+                                        callback: function(value) {
+                                            return value >= 0 ? '+' + value.toFixed(0) + '%' : value.toFixed(0) + '%';
+                                        }
+                                    },
+                                    grid: {
+                                        color: function(context) {
+                                            if (context.tick.value === 0) {
+                                                return 'rgba(0, 0, 0, 0.3)'; // 0% 라인 강조
+                                            }
+                                            return 'rgba(0, 0, 0, 0.1)';
+                                        }
+                                    }
+                                },
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: '기간',
+                                        font: {
+                                            size: 14,
+                                            weight: 'bold'
+                                        }
+                                    },
+                                    ticks: {
+                                        maxRotation: 45,
+                                        minRotation: 45
+                                    }
+                                }
+                            },
+                            interaction: {
+                                intersect: false,
+                                mode: 'index'
+                            }
+                        }
+                    });
+                } else {
+                    const errorMsg = createElement('p', 'text-red-500 p-4');
+                    errorMsg.textContent = '차트를 표시할 수 없습니다. Chart.js가 로드되지 않았습니다.';
+                    chartContainer.appendChild(errorMsg);
+                }
+                
+                const backToListBtn2 = createElement('button', 'w-full mt-6 bg-gray-500 hover:bg-gray-600 text-white font-bold py-4 rounded-lg text-xl');
+                backToListBtn2.textContent = '← 목록으로 돌아가기';
+                backToListBtn2.addEventListener('click', () => {
+                    state.selectedCompany = null;
+                    render();
+                });
+                container.appendChild(backToListBtn2);
+            }
+            
+            root.appendChild(container);
+        }
+
+        function renderReturnTable() {
+            destroyAllCharts();
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error('root 요소를 찾을 수 없습니다.');
+                return;
+            }
+            root.innerHTML = '';
+            root.className = 'p-6 max-w-7xl mx-auto bg-gradient-to-br from-purple-50 to-pink-50 min-h-screen';
+            
+            const container = createElement('div', 'bg-white rounded-xl shadow-lg p-8');
+            
+            const title = createElement('h1', 'text-4xl font-bold mb-6 text-center text-gray-800');
+            title.textContent = '📊 2021년 4월부터 2025년 12월까지의 총 수익률';
+            container.appendChild(title);
+            
+            // 뒤로 가기 버튼
+            const backBtn = createElement('button', 'mb-6 bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg');
+            backBtn.textContent = '← 결과 페이지로 돌아가기';
+            backBtn.addEventListener('click', () => {
+                state.stage = 'final';
+                render();
+            });
+            container.appendChild(backBtn);
+            
+            // 모든 회사의 총 수익률 계산
+            const returnData = [];
+            Object.entries(companies).forEach(([ticker, info]) => {
+                if (ticker === 'CASH') return; // 현금은 제외
+                
+                // 2021년 4월부터 2025년 12월까지의 총 수익률 계산
+                let totalReturn = 1.0;
+                for (let i = 0; i < TOTAL_MONTHS && i < info.returns.length; i++) {
+                    totalReturn *= info.returns[i];
+                }
+                const returnPercent = ((totalReturn - 1) * 100).toFixed(2);
+                
+                returnData.push({
+                    ticker: ticker,
+                    name: info.name,
+                    codeName: info.codeName,
+                    return: totalReturn,
+                    returnPercent: parseFloat(returnPercent),
+                    color: info.color
+                });
+            });
+            
+            // 수익률 순으로 정렬 (높은 순)
+            returnData.sort((a, b) => b.returnPercent - a.returnPercent);
+            
+            // 표 생성
+            const tableContainer = createElement('div', 'overflow-x-auto');
+            const table = createElement('table', 'w-full border-collapse bg-white rounded-lg shadow-lg');
+            
+            // 테이블 헤더
+            const thead = createElement('thead', 'bg-gray-100');
+            const headerRow = createElement('tr');
+            const headers = ['순위', '회사명', '코드명', '총 수익률'];
+            headers.forEach(headerText => {
+                const th = createElement('th', 'px-6 py-4 text-left text-sm font-semibold text-gray-700 border-b');
+                th.textContent = headerText;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+            
+            // 테이블 바디
+            const tbody = createElement('tbody');
+            returnData.forEach((data, index) => {
+                const row = createElement('tr', 'hover:bg-gray-50 border-b transition');
+                
+                // 순위
+                const rankCell = createElement('td', 'px-6 py-4 text-sm font-bold text-gray-700');
+                if (index < 3) {
+                    rankCell.className = 'px-6 py-4 text-sm font-bold text-yellow-600';
+                }
+                rankCell.textContent = index + 1;
+                row.appendChild(rankCell);
+                
+                // 회사명
+                const nameCell = createElement('td', 'px-6 py-4 text-sm font-semibold');
+                nameCell.textContent = data.name;
+                nameCell.style.color = data.color;
+                row.appendChild(nameCell);
+                
+                // 코드명
+                const codeCell = createElement('td', 'px-6 py-4 text-sm text-gray-600');
+                codeCell.textContent = data.codeName;
+                row.appendChild(codeCell);
+                
+                // 총 수익률
+                const returnCell = createElement('td', `px-6 py-4 text-sm font-bold text-lg ${data.returnPercent >= 0 ? 'text-green-600' : 'text-red-600'}`);
+                const sign = data.returnPercent >= 0 ? '+' : '';
+                returnCell.textContent = `${sign}${data.returnPercent.toFixed(2)}%`;
+                row.appendChild(returnCell);
+                
+                tbody.appendChild(row);
+            });
+            table.appendChild(tbody);
+            tableContainer.appendChild(table);
+            container.appendChild(tableContainer);
+            
+            root.appendChild(container);
+        }
+
+        function render() {
+            try {
+                switch(state.stage) {
+                    case 'setup':
+                        renderSetup();
+                        break;
+                    case 'rebalance':
+                        renderRebalance();
+                        break;
+                    case 'rebalanceInput':
+                        renderRebalanceInput();
+                        break;
+                    case 'final':
+                        renderFinal();
+                        break;
+                    case 'companyDetails':
+                        renderCompanyDetails();
+                        break;
+                    case 'returnTable':
+                        renderReturnTable();
+                        break;
+                    default:
+                        console.error('Unknown stage:', state.stage);
+                        state.stage = 'setup';
+                        renderSetup();
+                }
+            } catch (error) {
+                console.error('Error in render:', error);
+                const root = document.getElementById('root');
+                if (root) {
+                    root.innerHTML = '<div style="padding: 20px; color: red;"><h1>렌더링 오류</h1><p>' + error.message + '</p><pre>' + error.stack + '</pre></div>';
+                }
+            }
+        }
+
+        // 초기 렌더링 (setup은 차트 불필요, Chart.js는 year5/final 등에서만 사용)
+        function init() {
+            const root = document.getElementById('root');
+            if (!root) {
+                document.body.innerHTML = '<div style="padding:20px;color:red;">오류: root 요소를 찾을 수 없습니다.</div>';
+                return;
+            }
+            render();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>
